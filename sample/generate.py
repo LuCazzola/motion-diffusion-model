@@ -6,7 +6,9 @@ numpy array. This can be used to produce samples for FID evaluation.
 from utils.fixseed import fixseed
 import os
 import numpy as np
+import json
 import torch
+import random
 from utils.parser_util import generate_args
 from utils.model_util import create_model_and_diffusion, load_saved_model
 from utils import dist_util
@@ -72,6 +74,23 @@ def main(args=None):
             action_text = fr.readlines()
         action_text = [s.replace('\n', '') for s in action_text]
         args.num_samples = len(action_text)
+    # Setup Few-Shot generation Text-to-Motion Action generation
+    elif args.few_shot:
+        assert os.path.exists(args.dataset_desc), f"File not found: {args.dataset_desc}"
+        with open(args.dataset_desc, 'r') as f:
+            desc_data = json.load(f)
+        
+        texts = []
+        for label_idx in args.action_labels:
+            key = str(label_idx)
+            assert key in desc_data, f"Label {label_idx} not found in {args.dataset_desc}"
+            captions = desc_data[key]["captions"]
+            sampled_captions = [random.choice(captions) for _ in range(args.shots)]
+            texts += sampled_captions
+
+        args.num_samples = len(args.action_labels) * args.shots
+        args.num_repetitions = 1
+        #args.action_text = texts
 
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
 

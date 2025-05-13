@@ -1,5 +1,15 @@
 # Fork of: MDM - Human Motion Diffusion Model
 
+* Customized implementation of ![MDM - Motion Diffusion Model](https://github.com/GuyTevet/motion-diffusion-model)
+* Reference ![Base Repo](https://github.com/LuCazzola/Few-Shot_MDM) to have a better understanding of the context
+
+# Key modifications
+
+* Added $n$-ways $m$-shots Text-2-Motion (t2m) generation:
+  * A .json is provided listing a set of action classes we'd like to synthetize. To each action class a set of natural language descriptions is associated.
+  * On each shot (repetition) $n$ samples are synthetized by random sampling a caption from the candidate captions set
+  * In ![Base Repo](https://github.com/LuCazzola/Few-Shot_MDM) we use such synthetic samples to train a HAR model
+
 ```
 python3 -m sample.generate \
   --model_path ./save/humanml_enc_512_50steps/model000750000.pt \
@@ -7,3 +17,4 @@ python3 -m sample.generate \
   --action_labels 0 1 2 3 4 \
   --dataset_desc ../../data/NTU_RGBD/ntu_desc.json
 ```
+

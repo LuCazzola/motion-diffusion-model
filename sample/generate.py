@@ -34,9 +34,10 @@ def main(args=None):
     max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
-    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
+    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.few_shot])
     if args.context_len > 0:
         is_using_data = True  # For prefix completion, we need to sample a prefix
+    
     dist_util.setup_dist(args.device)
     if out_path == '':
         out_path = os.path.join(os.path.dirname(args.model_path),
@@ -50,6 +51,9 @@ def main(args=None):
 
     # this block must be called BEFORE the dataset is loaded
     texts = None
+    action_text = None
+    few_shot_captions_idxs = None
+    avail_captions = None
     if args.text_prompt != '':
         texts = [args.text_prompt] * args.num_samples
     elif args.input_text != '':
@@ -80,19 +84,23 @@ def main(args=None):
         with open(args.dataset_desc, 'r') as f:
             desc_data = json.load(f)
         
+        few_shot_captions_idxs = []
+        avail_captions = []
         texts = []
-        for label_idx in args.action_labels:
-            key = str(label_idx)
-            assert key in desc_data, f"Label {label_idx} not found in {args.dataset_desc}"
-            captions = desc_data[key]["captions"]
-            sampled_captions = [random.choice(captions) for _ in range(args.shots)]
-            texts += sampled_captions
+        for idx in args.action_labels:
+            key = str(idx)
+            assert key in desc_data, f"Label {key} not found in {args.dataset_desc}"
+            captions = desc_data[key]["captions"] # each action class has a set of candidate captions
+            choices = [random.randint(0, len(captions) - 1) for _ in range(args.shots)] # choose a random caption for each shot
+            # Store values apart
+            texts.append(captions[choices[0]]) # setup the text for the first shot
+            few_shot_captions_idxs.append(choices)
+            avail_captions.append(captions)
 
-        args.num_samples = len(args.action_labels) * args.shots
-        args.num_repetitions = 1
-        #args.action_text = texts
+        args.num_samples = len(args.action_labels) # num samples as synonym for nuber of actions/ways
+        args.num_repetitions = args.shots # repetitions used as synonym for shots
 
-    args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
+    args.batch_size = args.num_samples # Sampling a single batch from the testset, with exactly args.num_samples
 
     print('Loading dataset...')
     data = load_dataset(args, max_frames, n_frames)
@@ -124,15 +132,16 @@ def main(args=None):
             model_kwargs['y']['text'] = texts
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
-        is_t2m = any([args.input_text, args.text_prompt])
+        is_t2m = any([args.input_text, args.text_prompt, args.few_shot])
         if is_t2m:
             # t2m
             collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)]
-        else:
+        else :
             # a2m
             action = data.dataset.action_name_to_action(action_text)
             collate_args = [dict(arg, action=one_action, action_text=one_action_text) for
                             arg, one_action, one_action_text in zip(collate_args, action, action_text)]
+
         _, model_kwargs = collate(collate_args)
 
     model_kwargs['y'] = {key: val.to(dist_util.dev()) if torch.is_tensor(val) else val for key, val in model_kwargs['y'].items()}
@@ -149,7 +158,11 @@ def main(args=None):
     if 'text' in model_kwargs['y'].keys():
         # encoding once instead of each iteration saves lots of time
         model_kwargs['y']['text_embed'] = model.encode_text(model_kwargs['y']['text'])
-    
+
+    if args.few_shot:
+        # encode all available captions
+        avail_captions_enc = [model.encode_text(avail_captions[i][j]).cpu() for i in range(args.num_samples) for j in range(len(avail_captions[i]))]        
+
     if args.dynamic_text_path != '':
         # Rearange the text to match the autoregressive sampling - each prompt fits to a single prediction
         # Which is 2 seconds of motion by default
@@ -160,8 +173,16 @@ def main(args=None):
         else:
             raise NotImplementedError('DiP model only supports BERT text encoder at the moment. If you implement this, please send a PR!')
     
+
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
+        if args.few_shot:
+            # update captions for each shot
+            model_kwargs['y']['text'] = [avail_captions[s][few_shot_captions_idxs[s][rep_i]] for s in range(args.num_samples)]
+            model_kwargs['y']['text_embed'] = torch.cat(
+                [avail_captions_enc[s][few_shot_captions_idxs[s][rep_i]] for s in range(args.num_samples)],
+                dim=0
+            )
 
         sample = sample_fn(
             model,

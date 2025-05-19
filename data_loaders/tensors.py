@@ -91,4 +91,3 @@ def t2m_prefix_collate(batch, pred_len):
         'key': b[7] if len(b) > 7 else None,
     } for b in batch]
     return collate(adapted_batch)
-

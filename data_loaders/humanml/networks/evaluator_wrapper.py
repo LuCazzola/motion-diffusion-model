@@ -106,7 +106,7 @@ def build_evaluators(opt):
                                       device=opt['device'])
 
     ckpt_dir = opt['dataset_name']
-    if opt['dataset_name'] == 'humanml':
+    if opt['dataset_name'] == 'humanml' or opt['dataset_name'] == 'ntu60':
         ckpt_dir = 't2m'
 
     checkpoint = torch.load(pjoin(opt['checkpoints_dir'], ckpt_dir, 'text_mot_match', 'model', 'finest.tar'),
@@ -131,7 +131,7 @@ class EvaluatorMDMWrapper(object):
             'max_text_len': 20,
             'dim_text_hidden': 512,
             'dim_coemb_hidden': 512,
-            'dim_pose': 263 if dataset_name == 'humanml' else 251,
+            'dim_pose': 263 if (dataset_name == 'humanml' or dataset_name == 'ntu60') else 251,
             'dim_movement_enc_hidden': 512,
             'dim_movement_latent': 512,
             'checkpoints_dir': '.',

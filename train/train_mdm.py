@@ -33,15 +33,17 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-
     data = get_dataset_loader(name=args.dataset, 
                               batch_size=args.batch_size, 
                               num_frames=args.num_frames, 
                               fixed_len=args.pred_len + args.context_len, 
                               pred_len=args.pred_len,
+                              split=args.split,
+                              hml_mode='train' if not args.few_shot else 'few_shot_train',
                               device=dist_util.dev(),)
 
     print("creating model and diffusion...")
+    
     model, diffusion = create_model_and_diffusion(args, data)
     model.to(dist_util.dev())
     model.rot2xyz.smpl_model.eval()

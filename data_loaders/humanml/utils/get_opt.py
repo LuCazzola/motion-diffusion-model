@@ -68,6 +68,15 @@ def get_opt(opt_path, device):
         opt.joints_num = 21
         opt.dim_pose = 251
         opt.max_motion_length = 196
+    if opt.dataset_name == 'ntu60':
+        opt.data_root = './dataset/NTU60'
+        opt.class_captions = pjoin(opt.data_root, 'class_captions.json')
+        opt.motion_dir = pjoin(opt.data_root, 'annotations')
+        opt.text_dir = pjoin(opt.data_root, 'texts')
+        opt.joints_num = 22
+        opt.dim_pose = 66
+        opt.max_motion_length = 196
+        #opt.dataset_name= 't2m'
     else:
         raise KeyError('Dataset not recognized')
 

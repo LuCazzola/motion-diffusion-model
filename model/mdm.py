@@ -98,14 +98,14 @@ class MDM(nn.Module):
             raise ValueError('Please choose correct architecture [trans_enc, trans_dec, gru]')
 
         self.embed_timestep = TimestepEmbedder(self.latent_dim, self.sequence_pos_encoder)
-
+    
         if self.cond_mode != 'no_cond':
             if 'text' in self.cond_mode:
                 # We support CLIP encoder and DistilBERT
                 print('EMBED TEXT')
                 
                 self.text_encoder_type = kargs.get('text_encoder_type', 'clip')
-                
+
                 if self.text_encoder_type == "clip":
                     print('Loading CLIP...')
                     self.clip_version = clip_version
@@ -163,7 +163,7 @@ class MDM(nn.Module):
     def clip_encode_text(self, raw_text):
         # raw_text - list (batch_size length) of strings with input text prompts
         device = next(self.parameters()).device
-        max_text_len = 20 if self.dataset in ['humanml', 'kit'] else None  # Specific hardcoding for humanml dataset
+        max_text_len = 20 if self.dataset in ['humanml', 'kit', 'ntu60'] else None  # Specific hardcoding for humanml dataset
         if max_text_len is not None:
             default_context_length = 77
             context_length = max_text_len + 2 # start_token + 20 + end_token
@@ -206,6 +206,7 @@ class MDM(nn.Module):
                                    y['mask']], dim=-1)
 
         force_mask = y.get('uncond', False)
+
         if 'text' in self.cond_mode:
             if 'text_embed' in y.keys():  # caching option
                 enc_text = y['text_embed']
@@ -279,7 +280,11 @@ class MDM(nn.Module):
             output = output[self.context_len:]
             y['mask'] = y['mask'][..., self.context_len:]
         
+        if torch.isnan(output).any():
+            print("[DEBUG] NaNs found before OutputProcess!")
+
         output = self.output_process(output)  # [bs, njoints, nfeats, nframes]
+        
         return output
 
 
@@ -339,11 +344,11 @@ class InputProcess(nn.Module):
         self.poseEmbedding = nn.Linear(self.input_feats, self.latent_dim)
         if self.data_rep == 'rot_vel':
             self.velEmbedding = nn.Linear(self.input_feats, self.latent_dim)
-
+        
     def forward(self, x):
         bs, njoints, nfeats, nframes = x.shape
-        x = x.permute((3, 0, 1, 2)).reshape(nframes, bs, njoints*nfeats)
-
+        x = x.permute((3, 0, 1, 2)).reshape(nframes, bs, njoints*nfeats).float()
+        
         if self.data_rep in ['rot6d', 'xyz', 'hml_vec']:
             x = self.poseEmbedding(x)  # [seqlen, bs, d]
             return x

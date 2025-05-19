@@ -300,6 +300,7 @@ class Text2MotionDatasetV2(data.Dataset):
         self.name_list = name_list
         self.reset_max_len(self.max_length)
 
+
     def reset_max_len(self, length):
         assert length <= self.max_motion_length
         self.pointer = np.searchsorted(self.length_arr, length)
@@ -317,6 +318,7 @@ class Text2MotionDatasetV2(data.Dataset):
         key = self.name_list[idx]
         data = self.data_dict[key]
         motion, m_length, text_list = data['motion'], data['length'], data['text']
+        
         # Randomly select a caption
         text_data = random.choice(text_list)
         caption, tokens = text_data['caption'], text_data['tokens']
@@ -333,10 +335,12 @@ class Text2MotionDatasetV2(data.Dataset):
             sent_len = len(tokens)
         pos_one_hots = []
         word_embeddings = []
+        
         for token in tokens:
-            word_emb, pos_oh = self.w_vectorizer[token]
+            word_emb, pos_oh = self.w_vectorizer[token]    
             pos_one_hots.append(pos_oh[None, :])
             word_embeddings.append(word_emb[None, :])
+            
         pos_one_hots = np.concatenate(pos_one_hots, axis=0)
         word_embeddings = np.concatenate(word_embeddings, axis=0)
 
@@ -360,17 +364,15 @@ class Text2MotionDatasetV2(data.Dataset):
         idx = random.randint(0, len(motion) - m_length)
         if self.opt.disable_offset_aug:
             idx = random.randint(0, self.opt.unit_length)
-        motion = motion[idx:idx+m_length]
+        motion = motion[idx:idx+m_length] # Temporal sampling
 
         "Z Normalization"
-        motion = (motion - self.mean) / self.std
-
+        motion = (motion - self.mean) / np.maximum(self.std, 1e-4)
+        
         if m_length < self.max_motion_length:
             motion = np.concatenate([motion,
                                      np.zeros((self.max_motion_length - m_length, motion.shape[1]))
                                      ], axis=0)
-        # print(word_embeddings.shape, motion.shape)
-        # print(tokens)
 
         length = (original_length, m_length) if self.opt.fixed_len > 0 else m_length
 
@@ -494,7 +496,7 @@ class Text2MotionDatasetBaseline(data.Dataset):
         pos_one_hots = np.concatenate(pos_one_hots, axis=0)
         word_embeddings = np.concatenate(word_embeddings, axis=0)
 
-        len_gap = (m_length - self.max_length) // self.opt.unit_length
+        len_gap = (m_length - self.max_length) // self.opt.unit_length + 1e-8
 
         if m_length != self.max_length:
             # print("Motion original length:%d_%d"%(m_length, len(motion)))
@@ -768,10 +770,14 @@ class HumanML3D(data.Dataset):
         opt.text_dir = pjoin(abs_base_path, opt.text_dir)
         opt.model_dir = pjoin(abs_base_path, opt.model_dir)
         opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir)
-        opt.data_root = pjoin(abs_base_path, opt.data_root)
+        
+        #opt.data_root = pjoin(abs_base_path, opt.data_root)
+        opt.data_root = pjoin(abs_base_path, opt.data_root, os.path.dirname(split)) # not assuming split is in the data_root
+        
         opt.save_root = pjoin(abs_base_path, opt.save_root)
         opt.meta_dir = pjoin(abs_base_path, './dataset')
-        opt.use_cache = kwargs.get('use_cache', True)
+        opt.use_cache = kwargs.get('use_cache', False) # Turned of caching
+        
         opt.fixed_len = kwargs.get('fixed_len', 0)
         if opt.fixed_len > 0:
             opt.max_motion_length = opt.fixed_len
@@ -782,10 +788,12 @@ class HumanML3D(data.Dataset):
 
         if mode == 'gt':
             # used by T2M models (including evaluators)
+            print(f'Loading GT stats from {opt.meta_dir} ...')
             self.mean = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
             self.std = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
-        elif mode in ['train', 'eval', 'text_only']:
+        elif mode in ['train', 'eval', 'text_only', 'few_shot_train']:
             # used by our models
+            print(f'Loading stats from {opt.data_root} ...')
             self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
             self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
 
@@ -795,13 +803,18 @@ class HumanML3D(data.Dataset):
             self.mean_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
             self.std_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
 
-        self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        self.split_file = pjoin(opt.data_root, f'{os.path.basename(split)}.txt')
+
         if mode == 'text_only':
             self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file)
         else:
             self.w_vectorizer = WordVectorizer(pjoin(opt.cache_dir, 'glove'), 'our_vab')
             self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer)
-            self.num_actions = 1 # dummy placeholder
+            if mode == 'few_shot_train' :
+                self.num_actions = len(kwargs.get('action_classes', [])) # n. of ways
+                self.shots = kwargs.get('shots', 0) # n. of shots
+            else:
+                self.num_actions = 1 # dummy placeholder
 
         self.mean_gpu = torch.tensor(self.mean).to(device)[None, :, None, None]
         self.std_gpu = torch.tensor(self.std).to(device)[None, :, None, None]
@@ -821,3 +834,8 @@ class HumanML3D(data.Dataset):
 class KIT(HumanML3D):
     def __init__(self, mode, datapath='./dataset/kit_opt.txt', split="train", **kwargs):
         super(KIT, self).__init__(mode, datapath, split, **kwargs)
+
+# A wrapper class for t2m original dataset for MDM purposes
+class NTU60(HumanML3D):
+    def __init__(self, mode, datapath='./dataset/ntu60_opt.txt', split="train", **kwargs):
+        super(NTU60, self).__init__(mode, datapath, split, **kwargs)

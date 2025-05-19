@@ -43,6 +43,11 @@ def get_model_args(args, data):
         njoints = 263
         nfeats = 1
         all_goal_joint_names = ['pelvis'] + HML_EE_JOINT_NAMES
+    elif args.dataset == 'ntu60':
+        data_rep = 'xyz'
+        njoints = 66 # 22 * 3
+        nfeats = 1
+        all_goal_joint_names = ['pelvis'] + HML_EE_JOINT_NAMES
     elif args.dataset == 'kit':
         data_rep = 'hml_vec'
         njoints = 251

@@ -64,8 +64,9 @@ class TrainLoop:
         self.resume_step = 0
         self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
-        self.num_epochs = self.num_steps // len(self.data) + 1
 
+        self.num_epochs = self.num_steps // len(self.data) + 1
+        
         self.sync_cuda = torch.cuda.is_available()
 
         self._load_and_sync_parameters()
@@ -104,7 +105,7 @@ class TrainLoop:
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
-        if args.dataset in ['kit', 'humanml'] and args.eval_during_training:
+        if args.dataset in ['kit', 'humanml', 'ntu60'] and args.eval_during_training:
             mm_num_samples = 0  # mm is super slow hence we won't run it during training
             mm_num_repeats = 0  # mm is super slow hence we won't run it during training
             gen_loader = get_dataset_loader(name=args.dataset, batch_size=args.eval_batch_size, num_frames=None,
@@ -206,9 +207,9 @@ class TrainLoop:
 
     def run_loop(self):
         print('train steps:', self.num_steps)
-        for epoch in range(self.num_epochs):
-            print(f'Starting epoch {epoch}')
-            for motion, cond in tqdm(self.data):
+        for epoch in tqdm(range(self.num_epochs), desc='Epoch'):
+            
+            for motion, cond in self.data:
                 if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
                 
@@ -244,6 +245,7 @@ class TrainLoop:
                 self.step += 1
             if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                 break
+
         # Save the last checkpoint if it wasn't already saved.
         if (self.total_step() - 1) % self.save_interval != 0:
             self.save()
@@ -254,7 +256,7 @@ class TrainLoop:
             return
         start_eval = time.time()
         if self.eval_wrapper is not None:
-            print('Running evaluation loop: [Should take about 90 min]')
+            print('Running evaluation loop...')
             log_file = os.path.join(self.save_dir, f'eval_humanml_{(self.total_step()):09d}.log')
             diversity_times = 300
             mm_num_times = 0  # mm is super slow hence we won't run it during training
@@ -287,7 +289,6 @@ class TrainLoop:
 
         end_eval = time.time()
         print(f'Evaluation time: {round(end_eval-start_eval)/60}min')
-
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
@@ -341,6 +342,7 @@ class TrainLoop:
                 )
 
             loss = (losses["loss"] * weights).mean()
+
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )

@@ -135,4 +135,9 @@ dependencies:
     - wasabi==0.10.1
     - wcwidth==0.2.5
     - blobfile==2.0.2
+    - decorator==4.4.2
+    - imageio==2.31.2
+    - imageio_ffmpeg==0.5.1
+    - moviepy==1.0.3
+    - proglog==0.1.12
 prefix: mdm

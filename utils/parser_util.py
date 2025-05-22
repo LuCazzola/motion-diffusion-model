@@ -235,17 +235,30 @@ def add_generate_options(parser):
                        help="An action name to be generated. If empty, will take text prompts from dataset.")
     group.add_argument("--target_joint_names", default='DIMP_FINAL', type=str, help="Force single joint configuration by specifing the joints (coma separated). If None - will use the random mode for all end effectors.")
 
+def add_generate_aug_options(parser):
+    # Augmentation applied to the generated motion
+    group = parser.add_argument_group('generate_aug')
+    group.add_argument("--motion_length_noise", type=float, default=1.5,
+                            help="variation (in senconds) applied to the generated motion.")
+
+def add_rendering_options(parser):
+    # Options associated to animation rendering into .mp4 files
+    group = parser.add_argument_group('rendering')
+    group.add_argument("--no_render", action='store_true',
+                        help="If set, will not render the generated motions.")
+    group.add_argument("--freeze_uneven_anim", action='store_true',
+                        help="If set, will freeze the uneven animation. Otherwise it will be trimmed")
+
 def add_few_shot_action_generation(parser):
     group = parser.add_argument_group('few_shot_generation')
-    group.add_argument("--few_shot", action='store_true', help="If true, few-shot generation is assumed.")
+    group.add_argument("--few_shot", action='store_true',
+                        help="If true, few-shot generation is assumed.")
     group.add_argument("--shots", default=10, type=int,
-                       help="Number of few shot samples to be generated.")
+                        help="Number of few shot samples to be generated.")
     group.add_argument("--action_labels", nargs='+', type=int, default=[],
-                   help="List of action labels (indexes) for few-shot generation.")
-    group.add_argument("--few_shot_dataset", default='nturgbd', type=str,
-                       help="Dataset used for few-shot generation.")
-    group.add_argument("--dataset_desc", default='', type=str,
-                       help="Path to a .json file listing viable natural language descriptions per action class")
+                        help="List of action labels (indexes) for few-shot generation.")
+    group.add_argument("--class_captions", default='', type=str,
+                        help="Path to a .json file listing viable natural language descriptions per action class")
 
 def add_edit_options(parser):
     group = parser.add_argument_group('edit')
@@ -308,6 +321,8 @@ def generate_args():
     add_base_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
+    add_rendering_options(parser)
+    add_generate_aug_options(parser)
     add_few_shot_action_generation(parser)
     args = parse_and_load_from_model(parser)
     cond_mode = get_cond_mode(args)

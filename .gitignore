@@ -129,7 +129,8 @@ dmypy.json
 .pyre/
 
 dataset/HumanML3D/
-dataset/NTU60-FS/
+dataset/NTU60/
+
 save/
 wandb/
 t2m/

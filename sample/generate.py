@@ -80,8 +80,8 @@ def main(args=None):
         args.num_samples = len(action_text)
     # Setup Few-Shot generation Text-to-Motion Action generation
     elif args.few_shot:
-        assert os.path.exists(args.dataset_desc), f"File not found: {args.dataset_desc}"
-        with open(args.dataset_desc, 'r') as f:
+        assert os.path.exists(args.class_captions), f"File not found: {args.class_captions}"
+        with open(args.class_captions, 'r') as f:
             desc_data = json.load(f)
         
         few_shot_captions_idxs = []
@@ -89,7 +89,7 @@ def main(args=None):
         texts = []
         for idx in args.action_labels:
             key = str(idx)
-            assert key in desc_data, f"Label {key} not found in {args.dataset_desc}"
+            assert key in desc_data, f"Label {key} not found in {args.class_captions}"
             captions = desc_data[key]["captions"] # each action class has a set of candidate captions
             choices = [random.randint(0, len(captions) - 1) for _ in range(args.shots)] # choose a random caption for each shot
             # Store values apart
@@ -121,8 +121,6 @@ def main(args=None):
         model = ClassifierFreeSampleModel(model)   # wrapping model with the classifier-free sampler
     model.to(dist_util.dev())
     model.eval()  # disable random masking
-
-    motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames)
 
     if is_using_data:
         iterator = iter(data)
@@ -173,9 +171,10 @@ def main(args=None):
         else:
             raise NotImplementedError('DiP model only supports BERT text encoder at the moment. If you implement this, please send a PR!')
     
-
+    nf_noise = 0
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
+        
         if args.few_shot:
             # update captions for each shot
             model_kwargs['y']['text'] = [avail_captions[s][few_shot_captions_idxs[s][rep_i]] for s in range(args.num_samples)]
@@ -183,6 +182,15 @@ def main(args=None):
                 [avail_captions_enc[s][few_shot_captions_idxs[s][rep_i]] for s in range(args.num_samples)],
                 dim=0
             )
+
+        if args.motion_length_noise > 0.0:
+            # Add noise to the motion length
+            nf_noise = int(random.uniform(-args.motion_length_noise, args.motion_length_noise) * fps)
+            model_kwargs['y']['lengths'] = torch.tensor(
+                [n_frames + nf_noise] * args.num_samples,
+                dtype=model_kwargs['y']['lengths'].dtype
+            )
+        motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames + nf_noise)
 
         sample = sample_fn(
             model,
@@ -224,8 +232,17 @@ def main(args=None):
 
         print(f"created {len(all_motions) * args.batch_size} samples")
 
-
+    # Pad motions to max length
+    max_length = np.max(all_lengths).item()
+    all_motions = [
+        np.concatenate(
+            [motion, np.zeros((motion.shape[0], motion.shape[1], motion.shape[2], max_length - motion.shape[3]))],
+            axis=3
+        ) if motion.shape[3] < max_length else motion
+        for motion in all_motions
+    ]
     all_motions = np.concatenate(all_motions, axis=0)
+
     all_motions = all_motions[:total_num_samples]  # [bs, njoints, 6, seqlen]
     all_text = all_text[:total_num_samples]
     all_lengths = np.concatenate(all_lengths, axis=0)[:total_num_samples]
@@ -233,7 +250,7 @@ def main(args=None):
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
     os.makedirs(out_path)
-
+    
     npy_path = os.path.join(out_path, 'results.npy')
     print(f"saving results file to [{npy_path}]")
     np.save(npy_path,
@@ -248,46 +265,51 @@ def main(args=None):
     with open(npy_path.replace('.npy', '_len.txt'), 'w') as fw:
         fw.write('\n'.join([str(l) for l in all_lengths]))
 
-    print(f"saving visualizations to [{out_path}]...")
-    skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
+    # Save the action labels for few-shot generation
+    if args.few_shot:
+        with open(npy_path.replace('.npy', '_cls.txt'), 'w') as fw:
+            fw.write('\n'.join([str(cls) for cls in args.action_labels] * args.num_repetitions))
 
-    sample_print_template, row_print_template, all_print_template, \
-    sample_file_template, row_file_template, all_file_template = construct_template_variables(args.unconstrained)
-    max_vis_samples = 6
-    num_vis_samples = min(args.num_samples, max_vis_samples)
-    animations = np.empty(shape=(args.num_samples, args.num_repetitions), dtype=object)
-    max_length = max(all_lengths)
+    if not args.no_render:
+        print(f"saving visualizations to [{out_path}]...")
+        skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
 
-    for sample_i in range(args.num_samples):
-        rep_files = []
-        for rep_i in range(args.num_repetitions):
-            caption = all_text[rep_i*args.batch_size + sample_i]
-            if args.dynamic_text_path != '':  # caption per frame
-                assert type(caption) == list
-                caption_per_frame = []
-                for c in caption:
-                    caption_per_frame += [c] * args.pred_len
-                caption = caption_per_frame
+        sample_print_template, row_print_template, all_print_template, \
+        sample_file_template, row_file_template, all_file_template = construct_template_variables(args.unconstrained)
+        max_vis_samples = 6
+        num_vis_samples = min(args.num_samples, max_vis_samples)
+        animations = np.empty(shape=(args.num_samples, args.num_repetitions), dtype=object)
+        max_length = max(all_lengths)
 
-            
-            # Trim / freeze motion if needed
-            length = all_lengths[rep_i*args.batch_size + sample_i]
-            motion = all_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:max_length]
-            if motion.shape[0] > length:
-                motion[length:-1] = motion[length-1]  # duplicate the last frame to end of motion, so all motions will be in equal length
+        for sample_i in range(args.num_samples):
+            rep_files = []
+            for rep_i in range(args.num_repetitions):
+                caption = all_text[rep_i*args.batch_size + sample_i]
+                if args.dynamic_text_path != '':  # caption per frame
+                    assert type(caption) == list
+                    caption_per_frame = []
+                    for c in caption:
+                        caption_per_frame += [c] * args.pred_len
+                    caption = caption_per_frame
+                
+                # Trim / freeze motion if needed
+                length = all_lengths[rep_i*args.batch_size + sample_i]
+                motion = all_motions[rep_i*args.batch_size + sample_i].transpose(2, 0, 1)[:max_length]
+                if args.freeze_uneven_anim and motion.shape[0] > length:
+                    motion[length:-1] = motion[length-1]  # duplicate the last frame to end of motion, so all motions will be in equal length
 
-            save_file = sample_file_template.format(sample_i, rep_i)
-            animation_save_path = os.path.join(out_path, save_file)
-            gt_frames = np.arange(args.context_len) if args.context_len > 0 and not args.autoregressive else []
-            animations[sample_i, rep_i] = plot_3d_motion(animation_save_path, 
-                                                         skeleton, motion, dataset=args.dataset, title=caption, 
-                                                         fps=fps, gt_frames=gt_frames)
-            rep_files.append(animation_save_path)
+                save_file = sample_file_template.format(sample_i, rep_i)
+                animation_save_path = os.path.join(out_path, save_file)
+                gt_frames = np.arange(args.context_len) if args.context_len > 0 and not args.autoregressive else []
+                animations[sample_i, rep_i] = plot_3d_motion(animation_save_path, 
+                                                            skeleton, motion, dataset=args.dataset, title=caption, 
+                                                            fps=fps, gt_frames=gt_frames)
+                rep_files.append(animation_save_path)
 
-    save_multiple_samples(out_path, {'all': all_file_template}, animations, fps, max(list(all_lengths) + [n_frames]))
+        save_multiple_samples(out_path, {'all': all_file_template}, animations, fps, max(list(all_lengths) + [n_frames]))
 
-    abs_path = os.path.abspath(out_path)
-    print(f'[Done] Results are at [{abs_path}]')
+        abs_path = os.path.abspath(out_path)
+        print(f'[Done] Results are at [{abs_path}]')
 
     return out_path
 
@@ -297,7 +319,7 @@ def save_multiple_samples(out_path, file_templates,  animations, fps, max_frames
     num_samples_in_out_file = 3
     n_samples = animations.shape[0]
     
-    for sample_i in range(0,n_samples,num_samples_in_out_file):
+    for sample_i in range(0, n_samples,num_samples_in_out_file):
         last_sample_i = min(sample_i+num_samples_in_out_file, n_samples)
         all_sample_save_file = file_templates['all'].format(sample_i, last_sample_i-1)
         if no_dir and n_samples <= num_samples_in_out_file:
@@ -349,7 +371,6 @@ def load_dataset(args, max_frames, n_frames):
                               fixed_len=args.pred_len + args.context_len, pred_len=args.pred_len, device=dist_util.dev())
     data.fixed_length = n_frames
     return data
-
 
 def is_substr_in_list(substr, list_of_strs):
     return np.char.find(list_of_strs, substr) != -1  # [substr in string for string in list_of_strs]

@@ -239,6 +239,11 @@ class Text2MotionDatasetV2(data.Dataset):
             for name in tqdm(id_list):
                 try:
                     motion = np.load(pjoin(opt.motion_dir, name + '.npy'))
+                    # In the case of 3D motion flatten to [T, J*dim]
+                    # which is the expected format in the repo.
+                    if motion.ndim == '3':
+                        motion = motion.reshape(motion.shape[0], -1)
+                    
                     if (len(motion)) < min_motion_len or (len(motion) >= 200):
                         continue
                     text_data = []
@@ -299,7 +304,6 @@ class Text2MotionDatasetV2(data.Dataset):
         self.data_dict = data_dict
         self.name_list = name_list
         self.reset_max_len(self.max_length)
-
 
     def reset_max_len(self, length):
         assert length <= self.max_motion_length

@@ -136,6 +136,7 @@ wandb/
 t2m/
 body_models/
 glove/
+kit/
 slurm**/
 *.out
 *.err

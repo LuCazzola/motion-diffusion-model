@@ -32,6 +32,7 @@ def main():
     with open(args_path, 'w') as fw:
         args_cpy = copy.deepcopy(args)
         args_cpy.lora = vars(args_cpy.lora)
+        args_cpy.moe = vars(args_cpy.moe)
         json.dump(vars(args_cpy), fw, indent=4, sort_keys=True)
 
     dist_util.setup_dist(args.device)

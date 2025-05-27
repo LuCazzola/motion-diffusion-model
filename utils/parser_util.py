@@ -4,7 +4,6 @@ import argparse
 import os
 import json
 
-
 def parse_and_load_from_model(parser):
     # args according to the loaded model
     # do not try to specify them from cmd line since they will be overwritten
@@ -55,8 +54,12 @@ def apply_rules(args):
     return args
 
 def wrap_args(args):
-    args.lora = group_args_by_prefix(args, "lora") # Nested namespace for 'lora_' options (for readability)
+    # Nested namespace for 'lora_' options (for readability)
+    args.lora = group_args_by_prefix(args, "lora")
+    args.moe = group_args_by_prefix(args, "moe")
+    # Flags for fast check of model presence
     setattr(args.lora, 'finetune', "LoRA" in args.peft)
+    setattr(args.moe, 'finetune', "MoE" in args.peft)
     return args
 
 def get_args_per_group_name(parser, args, group_name):
@@ -209,7 +212,10 @@ def add_peft_options(parser): # Parameter Efficient Fine-Tuning options [LoRA, M
     group.add_argument("--lora_no_q", action='store_true', help="remove LoRA adapter from query.")
     group.add_argument("--lora_ff", action='store_true', help="add LoRA to the feed-forward layers.")
     # MoE options
-
+    group.add_argument("--moe_num_experts", default=5, type=int, help="Number of experts in the MoE layer.")
+    group.add_argument("--moe_num_experts_per_tok", default=3, type=int, help="Number of experts per token in the MoE layer.")
+    group.add_argument("--moe_routing_strategy", default='topk', type=str, choices=['topk'], help="Routing strategy for the MoE layer.")
+    group.add_argument("--moe_lora_experts", action='store_true', help="If true, will use LoRA instead of FF.")
 
 def add_few_shot_training_options(parser):
     group = parser.add_argument_group('few_shot_training')

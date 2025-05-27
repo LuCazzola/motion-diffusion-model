@@ -68,11 +68,14 @@ class TrainLoop:
         self.num_epochs = self.num_steps // len(self.data) + 1
         self.sync_cuda = torch.cuda.is_available()
         self.lora = args.lora
+        self.moe = args.moe
 
         self._load_and_sync_parameters()
 
         if self.lora.finetune:
             self.model.add_LoRA_adapters()
+        if self.moe.finetune:
+            self.model.add_MoE_adapters(args)
 
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,

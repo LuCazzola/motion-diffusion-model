@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from argparse import Namespace
 import argparse
 import os
 import json
@@ -53,6 +54,10 @@ def apply_rules(args):
         args.multi_target_cond = True
     return args
 
+def wrap_args(args):
+    args.lora = group_args_by_prefix(args, "lora") # Nested namespace for 'lora_' options (for readability)
+    setattr(args.lora, 'finetune', "LoRA" in args.peft)
+    return args
 
 def get_args_per_group_name(parser, args, group_name):
     for group in parser._action_groups:
@@ -70,6 +75,9 @@ def get_model_path_from_args():
     except:
         raise ValueError('model_path argument must be specified.')
 
+def group_args_by_prefix(args: Namespace, prefix: str) -> Namespace:
+    group_dict = {k[len(prefix)+1:]: v for k, v in vars(args).items() if k.startswith(f"{prefix}_")}
+    return Namespace(**group_dict)
 
 def add_base_options(parser):
     group = parser.add_argument_group('base')
@@ -191,6 +199,18 @@ def add_training_options(parser):
     group.add_argument("--autoregressive_init", default='data', type=str, choices=['data', 'isaac'], 
                         help="Sets the source of the init frames, either from the dataset or isaac init poses.")
 
+
+def add_peft_options(parser): # Parameter Efficient Fine-Tuning options [LoRA, MoE, etc.]
+    group = parser.add_argument_group('peft')
+    group.add_argument("--peft", nargs='*', type=str, default=[], choices=['LoRA', 'MoE'], help="Type of PEFT to use.")
+    # LoRA options
+    group.add_argument("--lora_rank", default=5, type=int, help="Rank of the LoRA layers.")
+    group.add_argument("--lora_layer", default=-100, type=int, help="Transformers layer to use for lora, negative for all layers.")
+    group.add_argument("--lora_no_q", action='store_true', help="remove LoRA adapter from query.")
+    group.add_argument("--lora_ff", action='store_true', help="add LoRA to the feed-forward layers.")
+    # MoE options
+
+
 def add_few_shot_training_options(parser):
     group = parser.add_argument_group('few_shot_training')
     group.add_argument("--few_shot", action='store_true', help="If true, few-shot generation is assumed.")
@@ -311,8 +331,10 @@ def train_args():
     add_model_options(parser)
     add_diffusion_options(parser)
     add_training_options(parser)
+    add_peft_options(parser)
     add_few_shot_training_options(parser)
-    return apply_rules(parser.parse_args())
+
+    return wrap_args(apply_rules(parser.parse_args()))
 
 
 def generate_args():

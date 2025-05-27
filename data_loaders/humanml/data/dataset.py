@@ -241,7 +241,7 @@ class Text2MotionDatasetV2(data.Dataset):
                     motion = np.load(pjoin(opt.motion_dir, name + '.npy'))
                     # In the case of 3D motion flatten to [T, J*dim]
                     # which is the expected format in the repo.
-                    if motion.ndim == '3':
+                    if motion.ndim == 3:
                         motion = motion.reshape(motion.shape[0], -1)
                     
                     if (len(motion)) < min_motion_len or (len(motion) >= 200):
@@ -800,6 +800,12 @@ class HumanML3D(data.Dataset):
             print(f'Loading stats from {opt.data_root} ...')
             self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
             self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
+            
+            # Flatten stats if 2D was given
+            assert self.mean.shape == self.std.shape, "Mismatch in Mean - Std shapes"
+            if self.mean.ndim == 2:
+                self.mean = self.mean.reshape(-1)
+                self.std = self.std.reshape(-1)
 
         if mode == 'eval':
             # used by T2M models (including evaluators)

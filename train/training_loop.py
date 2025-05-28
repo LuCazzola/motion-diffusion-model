@@ -79,6 +79,9 @@ class TrainLoop:
         # Turn on adapters only for training
         if self.lora.finetune or self.moe.finetune:
             self.model.train_adapters_only()
+        # re-load the model to the device
+        self.model.to(args.device)
+
 
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,

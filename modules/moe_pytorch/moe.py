@@ -1,3 +1,4 @@
+from math import e
 import torch
 import torch.nn.functional as F
 
@@ -39,6 +40,8 @@ class MoE(nn.Module):
         weights, selected_experts = self.route(gate_logits) # decide routing
         weights = F.softmax(weights, dim=1, dtype=torch.float).to(inputs.dtype)
 
+        print("Selected Experts (SHAPE): ", selected_experts.shape)
+        exit(0)
         results = torch.zeros_like(inputs)
         for i, expert in enumerate(self.experts):
             batch_idx, nth_expert = torch.where(selected_experts == i)
@@ -66,7 +69,7 @@ class MoE(nn.Module):
                 exp = LoRA._from_linear(exp, args.lora_experts_rank).lora_module
             experts.append(exp)
         experts = nn.ModuleList(experts)
-
+        
         return MoE(module, experts, args)
 
 

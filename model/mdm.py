@@ -10,7 +10,7 @@ from utils.misc import WeightedSum
 from argparse import Namespace
 
 from modules.lora_pytorch import LoRA
-from modules.moe import MoE
+from modules.moe_pytorch import MoE
 
 def print_model_structure(module, indent=0, name='(root)', filter=""):
     prefix = '  ' * indent
@@ -175,10 +175,7 @@ class MDM(nn.Module):
     def add_LoRA_adapters(self):
         assert self.lora.finetune, "Trying to add LoRA but model was not selected"
         print("LoRAing MDM :)")
-        #for n, p in self.named_parameters():
-        #    if 'lora' not in n:
-        #        p.requires_grad = False
-        
+
         if self.arch == 'trans_enc':
             if self.lora.layer is not None  and self.lora.layer >=0:
                 # Inject LoRA at specific layer
@@ -198,21 +195,32 @@ class MDM(nn.Module):
         print("MoEing MDM :|")
         
         if self.arch == 'trans_enc':
-            for i, layer in enumerate(self.seqTransEncoder.layers):
-                for name, module in layer.named_children():
-                    if isinstance(module, nn.Linear):
-                        moe_module = MoE(
-                            args,
-                            module,
-                            self.moe.num_experts,
-                            self.moe.routing_strategy,
-                            lora_experts=self.moe.lora_experts,
-                        )
-                        setattr(layer, name, moe_module)
+            self.seqTransEncoder = MoE.from_module(self.seqTransEncoder, num_experts=args.moe_num_experts, args=args.moe)
         elif self.arch == 'trans_dec':
             raise ValueError("MoE supported only for 'trans_enc' architecture for now")
         else:
             raise ValueError('Please choose correct architecture [trans_enc, trans_dec]')
+
+    def train_adapters_only(self):
+        """
+        Freeze all parameters except Adapters (LoRA and MoE) parameters.
+        """
+        # Freeze everything
+        for param in self.parameters():
+            param.requires_grad = False
+
+        trainable_params = set()
+        # Collect parameters from LoRA and MoE (excluding base_expert)
+        for module in self.modules():
+            if isinstance(module, (LoRA, MoE)):
+                for name, param in module.named_parameters(recurse=True):
+                    if "base_expert" not in name:
+                        # Exclude base_expert parameters
+                        trainable_params.add(param)
+
+        for name, param in self.named_parameters():
+            if param in trainable_params:
+                param.requires_grad = True
 
 
     def mask_cond(self, cond, force_mask=False):
@@ -256,8 +264,8 @@ class MDM(nn.Module):
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
         """
-        print_model_structure(self)
-        exit(0)
+        #print_model_structure(self)
+        #exit(0)
         bs, njoints, nfeats, nframes = x.shape
         time_emb = self.embed_timestep(timesteps)  # [1, bs, d]
 

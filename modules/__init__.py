@@ -1,2 +1,2 @@
 from .lora_pytorch import LoRA # noqa
-from .moe import MoE # noqa
+from .moe_pytorch import MoE # noqa

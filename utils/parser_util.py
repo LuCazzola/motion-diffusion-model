@@ -79,6 +79,7 @@ def get_model_path_from_args():
         raise ValueError('model_path argument must be specified.')
 
 def group_args_by_prefix(args: Namespace, prefix: str) -> Namespace:
+    """Groups arguments by a given prefix."""
     group_dict = {k[len(prefix)+1:]: v for k, v in vars(args).items() if k.startswith(f"{prefix}_")}
     return Namespace(**group_dict)
 
@@ -95,12 +96,9 @@ def add_base_options(parser):
 
 def add_diffusion_options(parser):
     group = parser.add_argument_group('diffusion')
-    group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str,
-                       help="Noise schedule type")
-    group.add_argument("--diffusion_steps", default=1000, type=int,
-                       help="Number of diffusion steps (denoted T in the paper)")
+    group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str, help="Noise schedule type")
+    group.add_argument("--diffusion_steps", default=1000, type=int, help="Number of diffusion steps (denoted T in the paper)")
     group.add_argument("--sigma_small", default=True, type=bool, help="Use smaller sigma values.")
-
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
@@ -205,7 +203,7 @@ def add_training_options(parser):
 
 def add_peft_options(parser): # Parameter Efficient Fine-Tuning options [LoRA, MoE, etc.]
     group = parser.add_argument_group('peft')
-    group.add_argument("--peft", nargs='*', type=str, default=[], choices=['LoRA', 'MoE'], help="Type of PEFT to use.")
+    group.add_argument("--peft", nargs='*', type=str, default=[], choices=['LoRA', 'MoE'], help="Type of PEFT to use. (LoRA, MoE, both, ...). ")
     # LoRA options
     group.add_argument("--lora_rank", default=5, type=int, help="Rank of the LoRA layers.")
     group.add_argument("--lora_layer", default=-100, type=int, help="Transformers layer to use for lora, negative for all layers.")
@@ -214,8 +212,11 @@ def add_peft_options(parser): # Parameter Efficient Fine-Tuning options [LoRA, M
     # MoE options
     group.add_argument("--moe_num_experts", default=5, type=int, help="Number of experts in the MoE layer.")
     group.add_argument("--moe_num_experts_per_tok", default=3, type=int, help="Number of experts per token in the MoE layer.")
+    group.add_argument("--moe_gate_type", default='linear', type=str, choices=['linear'], help="Type of the gate module in the MoE layer.")
+    group.add_argument("--moe_gate_bias", action='store_true', help="If true, will use bias in the gate module of the MoE layer.")
     group.add_argument("--moe_routing_strategy", default='topk', type=str, choices=['topk'], help="Routing strategy for the MoE layer.")
     group.add_argument("--moe_lora_experts", action='store_true', help="If true, will use LoRA instead of FF.")
+    group.add_argument("--moe_lora_experts_rank", default=5, type=int, help="Rank of the LoRA experts.")
 
 def add_few_shot_training_options(parser):
     group = parser.add_argument_group('few_shot_training')

@@ -65,17 +65,20 @@ class TrainLoop:
         self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
 
-        self.num_epochs = self.num_steps // len(self.data) + 1
         self.sync_cuda = torch.cuda.is_available()
         self.lora = args.lora
         self.moe = args.moe
 
         self._load_and_sync_parameters()
 
+        # Plug adapters
         if self.lora.finetune:
             self.model.add_LoRA_adapters()
         if self.moe.finetune:
             self.model.add_MoE_adapters(args)
+        # Turn on adapters only for training
+        if self.lora.finetune or self.moe.finetune:
+            self.model.train_adapters_only()
 
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
@@ -213,9 +216,8 @@ class TrainLoop:
                                                       self.data.dataset.t2m_dataset.opt.joints_num, self.model.all_goal_joint_names, cond['target_joint_names'], cond['is_heading']).detach()
 
     def run_loop(self):
-        print('train steps:', self.num_steps)
-        for epoch in tqdm(range(self.num_epochs), desc='Epoch'):
-            
+
+        for step in tqdm(range(self.num_steps), desc='Step'):
             for motion, cond in self.data:
                 if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break

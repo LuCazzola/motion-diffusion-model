@@ -34,7 +34,7 @@ def main(args=None):
     max_frames = 196 if args.dataset in ['kit', 'humanml', 'ntu60'] else 60
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
-    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.few_shot])
+    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.t2m_action_gen])
     if args.context_len > 0:
         is_using_data = True  # For prefix completion, we need to sample a prefix
     
@@ -78,10 +78,11 @@ def main(args=None):
             action_text = fr.readlines()
         action_text = [s.replace('\n', '') for s in action_text]
         args.num_samples = len(action_text)
-    # Setup Few-Shot generation Text-to-Motion Action generation
-    elif args.few_shot:
-        assert os.path.exists(args.class_captions), f"File not found: {args.class_captions}"
-        with open(args.class_captions, 'r') as f:
+    
+    # Setup Text grounded Action generation
+    elif args.t2m_action_gen:
+        assert os.path.exists(args.action_captions), f"File not found: {args.action_captions}"
+        with open(args.action_captions, 'r') as f:
             desc_data = json.load(f)
         
         few_shot_captions_idxs = []
@@ -89,16 +90,15 @@ def main(args=None):
         texts = []
         for idx in args.action_labels:
             key = str(idx)
-            assert key in desc_data, f"Label {key} not found in {args.class_captions}"
+            assert key in desc_data, f"Label {key} not found in {args.action_captions}"
             captions = desc_data[key]["captions"] # each action class has a set of candidate captions
-            choices = [random.randint(0, len(captions) - 1) for _ in range(args.shots)] # choose a random caption for each shot
+            choices = [random.randint(0, len(captions) - 1) for _ in range(args.num_repetitions)] # choose a random caption for each shot
             # Store values apart
             texts.append(captions[choices[0]]) # setup the text for the first shot
             few_shot_captions_idxs.append(choices)
             avail_captions.append(captions)
 
         args.num_samples = len(args.action_labels) # num samples as synonym for nuber of actions/ways
-        args.num_repetitions = args.shots # repetitions used as synonym for shots
 
     args.batch_size = args.num_samples # Sampling a single batch from the testset, with exactly args.num_samples
 
@@ -130,7 +130,7 @@ def main(args=None):
             model_kwargs['y']['text'] = texts
     else:
         collate_args = [{'inp': torch.zeros(n_frames), 'tokens': None, 'lengths': n_frames}] * args.num_samples
-        is_t2m = any([args.input_text, args.text_prompt, args.few_shot])
+        is_t2m = any([args.input_text, args.text_prompt, args.t2m_action_gen])
         if is_t2m:
             # t2m
             collate_args = [dict(arg, text=txt) for arg, txt in zip(collate_args, texts)]
@@ -157,7 +157,7 @@ def main(args=None):
         # encoding once instead of each iteration saves lots of time
         model_kwargs['y']['text_embed'] = model.encode_text(model_kwargs['y']['text'])
 
-    if args.few_shot:
+    if args.t2m_action_gen:
         # encode all available captions
         avail_captions_enc = [model.encode_text(avail_captions[i][j]).cpu() for i in range(args.num_samples) for j in range(len(avail_captions[i]))]        
 
@@ -175,7 +175,7 @@ def main(args=None):
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
         
-        if args.few_shot:
+        if args.t2m_action_gen:
             # update captions for each shot
             model_kwargs['y']['text'] = [avail_captions[s][few_shot_captions_idxs[s][rep_i]] for s in range(args.num_samples)]
             model_kwargs['y']['text_embed'] = torch.cat(
@@ -266,7 +266,7 @@ def main(args=None):
         fw.write('\n'.join([str(l) for l in all_lengths]))
 
     # Save the action labels for few-shot generation
-    if args.few_shot:
+    if args.t2m_action_gen:
         with open(npy_path.replace('.npy', '_cls.txt'), 'w') as fw:
             fw.write('\n'.join([str(cls) for cls in args.action_labels] * args.num_repetitions))
 
@@ -366,7 +366,7 @@ def load_dataset(args, max_frames, n_frames):
     data = get_dataset_loader(name=args.dataset,
                               batch_size=args.batch_size,
                               num_frames=max_frames,
-                              split='test',
+                              split='val', # 'test' FIXME ? not sure
                               hml_mode='train' if args.pred_len > 0 else 'text_only',  # We need to sample a prefix from the dataset
                               fixed_len=args.pred_len + args.context_len, pred_len=args.pred_len, device=dist_util.dev())
     data.fixed_length = n_frames

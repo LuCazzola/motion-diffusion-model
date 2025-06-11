@@ -163,7 +163,6 @@ class CompMDMGeneratedDataset(Dataset):
             sample_cls = AutoRegressiveSampler(args, sample_fn)
             sample_fn = sample_cls.sample
 
-
         real_num_batches = len(dataloader)
         if num_samples_limit is not None:
             real_num_batches = min(num_samples_limit // dataloader.batch_size + 1, real_num_batches)

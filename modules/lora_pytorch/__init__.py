@@ -1,1 +1,1 @@
-from .lora import LoRA
+from .lora import LoRA, namespace_to_lora_opt

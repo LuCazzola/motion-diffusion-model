@@ -7,6 +7,9 @@ from itertools import chain
 
 from typing_extensions import Literal
 
+from argparse import Namespace
+from dataclasses import dataclass
+
 from typing import (
     Generic,
     Iterable,
@@ -36,6 +39,18 @@ from .modules.linear import LinearLoRAModule
 
 ModuleType = TypeVar("ModuleType", bound=nn.Module)
 
+@dataclass
+class LoRAOptions:
+    rank: int = 5
+    ff: bool = True
+    no_q: bool = False
+
+def namespace_to_lora_opt(ns: Namespace) -> Tuple[LoRAOptions, Namespace]:
+    """Filter Namespace to create LoRAOptions and return the unused fields."""
+    valid_keys = LoRAOptions.__dataclass_fields__.keys()
+    filtered_dict = {k: v for k, v in vars(ns).items() if k in valid_keys}
+    discarded_dict = {k: v for k, v in vars(ns).items() if k not in valid_keys}
+    return LoRAOptions(**filtered_dict), Namespace(**discarded_dict)
 
 class LoRA(nn.Module, Generic[ModuleType]):
     def __init__(
@@ -168,11 +183,9 @@ class LoRA(nn.Module, Generic[ModuleType]):
     def from_module(
         cls,
         module: ModuleType,
-        rank: int,
+        opt: LoRAOptions,
         enabled: bool = True,
-        is_root: Literal[True] = True,
-        no_lora_q:bool=False,
-        lora_ff: bool=False
+        is_root: Literal[True] = True
     ) -> LoRA[ModuleType]:
         ...
 
@@ -181,32 +194,28 @@ class LoRA(nn.Module, Generic[ModuleType]):
     def from_module(
         cls,
         module: ModuleType,
-        rank: int,
+        opt: LoRAOptions,
         enabled: bool = True,
         is_root: Literal[False] = False,
-        no_lora_q:bool=False,
-        lora_ff: bool=False
     ) -> Union[LoRA[ModuleType], ModuleType]:
         ...
 
     @classmethod
     def from_module(
-        cls, module: ModuleType, rank: int, enabled: bool = True, is_root: bool = True, no_lora_q:bool=False, lora_ff: bool=False
+        cls, module: ModuleType, opt: LoRAOptions, enabled: bool = True, is_root: bool = True
     ):
-        if isinstance(module, nn.Linear) and lora_ff:
-            return LoRA._from_linear(module, rank)  # type: ignore
+        if isinstance(module, nn.Linear) and opt.ff:
+            return LoRA._from_linear(module, opt.rank)  # type: ignore
         # elif isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
         #     return LoRA._from_conv(module, rank)  # type: ignore
         # elif isinstance(module, nn.Embedding):
         #     return LoRA._from_embedding(module, rank)
         if isinstance(module, nn.MultiheadAttention):
-            return LoRA._from_multihead_attention(module, rank, no_lora_q)  # type: ignore
+            return LoRA._from_multihead_attention(module, opt.rank, opt.no_q)  # type: ignore
 
         for name, child in module.named_children():
             child = cast(ModuleType, child)
-            module._modules[name] = cls.from_module(
-                child, rank, enabled=enabled, is_root=False, no_lora_q=no_lora_q, lora_ff=lora_ff
-            )
+            module._modules[name] = cls.from_module(child, opt, enabled=enabled, is_root=False)
 
         if is_root:
             return LoRA(module, None, enabled=enabled)

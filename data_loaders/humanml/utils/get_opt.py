@@ -1,9 +1,8 @@
-import os
+import json
 from argparse import Namespace
 import re
 from os.path import join as pjoin
 from data_loaders.humanml.utils.word_vectorizer import POS_enumerator
-
 
 def is_float(numStr):
     flag = False
@@ -54,29 +53,50 @@ def get_opt(opt_path, device):
     opt.model_dir = pjoin(opt.save_root, 'model')
     opt.meta_dir = pjoin(opt.save_root, 'meta')
 
+    opt.fewshot = opt.fewshot if hasattr(opt, 'fewshot') else False
+
+    # Few-shot options, they can be omitted
+    base_dataset_root = './dataset'
     if opt.dataset_name == 't2m':
-        opt.data_root = './dataset/HumanML3D'
+        # HumanML3D dataset
+        opt.data_root = pjoin(base_dataset_root, 'HumanML3D')
         opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
         opt.text_dir = pjoin(opt.data_root, 'texts')
         opt.joints_num = 22
         opt.dim_pose = 263
         opt.max_motion_length = 196
     elif opt.dataset_name == 'kit':
-        opt.data_root = './dataset/KIT-ML'
+        # KIT Motion Language dataset
+        opt.data_root = pjoin(base_dataset_root, 'KIT-ML')
         opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
         opt.text_dir = pjoin(opt.data_root, 'texts')
         opt.joints_num = 21
         opt.dim_pose = 251
         opt.max_motion_length = 196
     elif opt.dataset_name == 'ntu60':
-        opt.data_root = './dataset/NTU60'
-        opt.class_captions = pjoin(opt.data_root, 'class_captions.json')
-        opt.motion_dir = pjoin(opt.data_root, 'annotations')
+        # NTU RGB+D dataset
+        opt.data_root = pjoin(base_dataset_root, 'NTU60')
+        opt.default_data_root = pjoin(opt.data_root, 'splits', 'default')
+        opt.fewshot_data_root = pjoin(opt.data_root, 'splits', 'fewshot')
+        opt.fewshot_meta_file = 'meta.json' # generation details of the few-shot (if in few-shot mode)
+        opt.action_captions = pjoin(opt.data_root, 'class_captions.json') # maps class names to captions
+
+        opt.motion_dir = pjoin(opt.data_root, 'new_joint_vecs')
         opt.text_dir = pjoin(opt.data_root, 'texts')
         opt.joints_num = 22
-        opt.dim_pose = 66
+        opt.dim_pose = 263
         opt.max_motion_length = 196
-        #opt.dataset_name= 't2m'
+
+        if not opt.fewshot:
+            opt.data_root = pjoin(opt.default_data_root, opt.task_split)
+        else:
+            opt.data_root = pjoin(opt.fewshot_data_root, opt.fewshot_id, opt.task_split)
+            opt.pretrain_data_root = pjoin(base_dataset_root, opt.pretrain_dataset)
+            with open(pjoin(opt.fewshot_data_root, opt.fewshot_id, opt.fewshot_meta_file,), 'r') as f:
+                opt.fewshot_metadata = Namespace(**json.load(f))
+            
+        # NOTE: NTU60 should be treated as t2m dataset, therefore, we overwrite the dataset name
+        opt.dataset_name= 't2m' # checking the dataset name has significance in the codebase
     else:
         raise KeyError(f'Dataset "{opt.dataset_name}" not recognized')
 

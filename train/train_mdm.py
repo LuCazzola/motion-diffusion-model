@@ -5,9 +5,8 @@ Train a diffusion model on images.
 
 import os
 import json
-import copy
 from utils.fixseed import fixseed
-from utils.parser_util import train_args
+from utils.parser_util import train_args, serialize_args, de_serialize_args
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
@@ -19,7 +18,7 @@ def main():
     fixseed(args.seed)
     train_platform_type = eval(args.train_platform_type)
     train_platform = train_platform_type(args.save_dir)
-    train_platform.report_args(args, name='Args')
+    train_platform.report_args(serialize_args(args), name='Args')
 
     if args.save_dir is None:
         raise FileNotFoundError('save_dir was not specified.')
@@ -30,10 +29,7 @@ def main():
         os.makedirs(args.save_dir)
     args_path = os.path.join(args.save_dir, 'args.json')
     with open(args_path, 'w') as fw:
-        args_cpy = copy.deepcopy(args)
-        args_cpy.lora = vars(args_cpy.lora)
-        args_cpy.moe = vars(args_cpy.moe)
-        json.dump(vars(args_cpy), fw, indent=4, sort_keys=True)
+        json.dump(serialize_args(args), fw, indent=4, sort_keys=True)
 
     dist_util.setup_dist(args.device)
 
@@ -43,8 +39,8 @@ def main():
                               num_frames=args.num_frames, 
                               fixed_len=args.pred_len + args.context_len, 
                               pred_len=args.pred_len,
-                              split=args.split,
-                              hml_mode='train' if not args.few_shot else 'few_shot_train',
+                              split='train',
+                              hml_mode='train',
                               device=dist_util.dev(),)
 
     print("creating model and diffusion...")

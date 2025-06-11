@@ -12,21 +12,6 @@ from argparse import Namespace
 from modules.lora_pytorch import LoRA
 from modules.moe_pytorch import MoE
 
-def print_model_structure(module, indent=0, name='(root)', filter=""):
-    prefix = '  ' * indent
-    classname = module.__class__.__name__
-    print(f"{prefix}{name}: {classname}")
-
-    # List parameters of this module (but not children)
-    for pname, param in module.named_parameters(recurse=False):
-        if filter in pname :
-            print(f"{prefix}  ↳ param: {pname:30s} | shape={tuple(param.shape)} | requires_grad={param.requires_grad}")
-
-    # Recurse through children
-    for child_name, child in module.named_children():
-        print_model_structure(child, indent + 1, name=child_name)
-
-
 class MDM(nn.Module):
     def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
@@ -53,9 +38,6 @@ class MDM(nn.Module):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.dropout = dropout
-
-        self.lora = lora if lora is not None else Namespace()
-        self.moe = moe if moe is not None else Namespace()
 
         self.ablation = ablation
         self.activation = activation
@@ -172,32 +154,32 @@ class MDM(nn.Module):
 
         return clip_model
 
-    def add_LoRA_adapters(self):
-        assert self.lora.finetune, "Trying to add LoRA but model was not selected"
-        print("LoRAing MDM :)")
-
-        if self.arch == 'trans_enc':
-            if self.lora.layer is not None  and self.lora.layer >=0:
-                # Inject LoRA at specific layer
-                layer =  LoRA.from_module(self.seqTransEncoder.layers[self.lora.layer], rank=self.lora.rank, no_lora_q=self.lora.no_q, lora_ff=self.lora.ff)
-                self.seqTransEncoder.layers[self.lora.layer] = layer
-            else:
-                # Inject LoRA at all layers
-                self.seqTransEncoder = LoRA.from_module(self.seqTransEncoder, rank=self.lora.rank, no_lora_q=self.lora.no_q, lora_ff=self.lora.ff)
-            
-        elif self.arch == 'trans_dec':
-            raise ValueError("LoRA supported only for 'trans_enc' architecture for now")
-        else:
-            raise ValueError('Please choose correct architecture [trans_enc, trans_dec]')
-
-    def add_MoE_adapters(self, args):
-        assert self.moe.finetune, "Trying to add MoE but model was not selected"
-        print("MoEing MDM :|")
+    def add_adapter(self, adapter, adapter_opt, guidance_opt):
         
         if self.arch == 'trans_enc':
-            self.seqTransEncoder = MoE.from_module(self.seqTransEncoder, num_experts=args.moe_num_experts, args=args.moe)
+            if 'transformer' in guidance_opt.where:
+                if -1 in guidance_opt.tLayer:
+                    # All layers
+                    self.seqTransEncoder = adapter.from_module(self.seqTransEncoder, adapter_opt)
+                else:
+                    # Specified layers
+                    for l in guidance_opt.tLayer:
+                        assert 0 <= l < self.num_layers, f"Layer {l} is out of range for {self.arch} layers"
+                        layer = adapter.from_module(self.seqTransEncoder.layers[l], adapter_opt)
+                        self.seqTransEncoder.layers[l] = layer
+        
+            if 'conditioning' in guidance_opt.where:
+                if self.embed_text:
+                    self.embed_text = adapter.from_module(self.embed_text, adapter_opt)
+                if self.embed_action:
+                    self.embed_action = adapter.from_module(self.embed_action, adapter_opt)
+            
+            if 'denoising_head' in guidance_opt.where:
+                self.output_process = adapter.from_module(self.output_process, adapter_opt)
+
+        
         elif self.arch == 'trans_dec':
-            raise ValueError("MoE supported only for 'trans_enc' architecture for now")
+            raise ValueError("Adapters supported only for 'trans_enc' architecture for now")
         else:
             raise ValueError('Please choose correct architecture [trans_enc, trans_dec]')
 
@@ -214,13 +196,16 @@ class MDM(nn.Module):
         for module in self.modules():
             if isinstance(module, (LoRA, MoE)):
                 for name, param in module.named_parameters(recurse=True):
-                    if "base_expert" not in name:
-                        # Exclude base_expert parameters
-                        trainable_params.add(param)
+                    if 'lora' in name:
+                        param.requires_grad = True
+                    
+                    #if "base_expert" not in name: # FIXME
+                    #    # Exclude base_expert parameters
+                    #    trainable_params.add(param)
 
-        for name, param in self.named_parameters():
-            if param in trainable_params:
-                param.requires_grad = True
+        #for name, param in self.named_parameters():
+        #    if param in trainable_params:
+        #        param.requires_grad = True
 
 
     def mask_cond(self, cond, force_mask=False):
@@ -264,8 +249,6 @@ class MDM(nn.Module):
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
         """
-        #print_model_structure(self)
-        #exit(0)
         bs, njoints, nfeats, nframes = x.shape
         time_emb = self.embed_timestep(timesteps)  # [1, bs, d]
 

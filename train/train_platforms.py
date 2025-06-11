@@ -62,12 +62,13 @@ class WandBPlatform(TrainPlatform):
     def __init__(self, save_dir, config=None, *args, **kwargs):
         super().__init__(save_dir, *args, **kwargs)
         self.wandb.login(host=os.getenv("WANDB_BASE_URL"), key=os.getenv("WANDB_API_KEY"))
+        
         self.wandb.init(
-            project='motion_diffusion',
-            name=self.name,
-            id=self.name,  # in order to send continued runs to the same record
-            resume='allow',  # in order to send continued runs to the same record
-            entity='tau-motion',  # will use your default entity if not set
+            project='CESI',
+            #name=self.name,
+            #id=self.name,  # in order to send continued runs to the same record
+            #resume='allow',  # in order to send continued runs to the same record
+            #entity='tau-motion',  # will use your default entity if not set
             save_code=True,
             config=config)  # config can also be sent via report_args()
 

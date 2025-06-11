@@ -8,7 +8,7 @@ class TopKRoutingConfig:
 
 def get_routing_strategy(
     name: str,
-    config: TopKRoutingConfig #Union[1,2,3,...]
+    config: TopKRoutingConfig #Union[TopKRoutingConfig, 1, 2,...]
 ):
     registry = {
         "topk": TopKRouting

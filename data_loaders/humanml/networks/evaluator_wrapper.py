@@ -27,7 +27,7 @@ def build_models(opt):
 class EvaluatorModelWrapper(object):
 
     def __init__(self, opt):
-
+        
         if opt.dataset_name == 't2m':
             opt.dim_pose = 263
         elif opt.dataset_name == 'kit':
@@ -121,6 +121,7 @@ def build_evaluators(opt):
 class EvaluatorMDMWrapper(object):
 
     def __init__(self, dataset_name, device):
+        
         opt = {
             'dataset_name': dataset_name,
             'device': device,

@@ -1,2 +1,1 @@
-from .moe import * # noqa
-from .routing import * # noqa
+from .moe import MoE, namespace_to_moe_opt # noqa

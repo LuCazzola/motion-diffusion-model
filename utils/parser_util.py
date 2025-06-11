@@ -3,6 +3,14 @@ from argparse import Namespace
 import argparse
 import os
 import json
+from copy import deepcopy
+
+LORA_PREFIX = "LoRA"
+MOE_PREFIX = "MoE"
+ADAPTERS = [
+    LORA_PREFIX,
+    MOE_PREFIX
+]
 
 def parse_and_load_from_model(parser):
     # args according to the loaded model
@@ -47,19 +55,20 @@ def apply_rules(args):
     # For prefix completion
     if args.pred_len == 0:
         args.pred_len = args.context_len
-
     # For target conditioning
     if args.lambda_target_loc > 0.:
         args.multi_target_cond = True
+
     return args
 
-def wrap_args(args):
-    # Nested namespace for 'lora_' options (for readability)
-    args.lora = group_args_by_prefix(args, "lora")
-    args.moe = group_args_by_prefix(args, "moe")
-    # Flags for fast check of model presence
-    setattr(args.lora, 'finetune', "LoRA" in args.peft)
-    setattr(args.moe, 'finetune', "MoE" in args.peft)
+def wrap_adapter_args(args):
+    """ Wraps adapter arguments into sub-namespaces for better organization."""
+    for PREFIX in ADAPTERS:
+        new_args, old_keys = group_args_by_prefix(args, PREFIX)
+        setattr(args, PREFIX, new_args) 
+        for k in old_keys:
+            delattr(args, k)
+        setattr(getattr(args, PREFIX), 'finetune', PREFIX in args.peft)
     return args
 
 def get_args_per_group_name(parser, args, group_name):
@@ -69,6 +78,40 @@ def get_args_per_group_name(parser, args, group_name):
             return list(argparse.Namespace(**group_dict).__dict__.keys())
     return ValueError('group_name was not found.')
 
+def serialize_args(ns):
+    if isinstance(ns, Namespace):
+        return {k: serialize_args(v) for k, v in vars(ns).items()}
+    return ns
+
+def de_serialize_args(d):
+    if isinstance(d, dict):
+        return Namespace(**{k: de_serialize_args(v) for k, v in d.items()})
+    return d
+
+def group_args_by_prefix(args: Namespace, prefix: str):
+    """Groups arguments by a given prefix and returns the extracted namespace and list of keys."""
+    group_dict = {k[len(prefix)+1:]: v for k, v in vars(args).items() if k.startswith(f"{prefix}_")}
+    extracted_keys = list(group_dict.keys())
+    # Remember: extracted_keys contain keys after stripping the prefix.
+    # You likely want the full keys to delete from args:
+    full_keys = [f"{prefix}_{k}" for k in extracted_keys]
+    return Namespace(**group_dict), full_keys
+
+def get_opts_from_adapter_name(name: str, args: Namespace):
+
+    adapter_args = getattr(args, name, None)
+    assert adapter_args is not None, f"Adapter arguments for {name} were not found in args."
+
+    if name == LORA_PREFIX:
+        from modules.lora_pytorch import namespace_to_lora_opt
+        return namespace_to_lora_opt(adapter_args)
+    elif name == MOE_PREFIX:
+        from modules.moe_pytorch import namespace_to_moe_opt
+        return namespace_to_moe_opt(adapter_args)
+    else :
+        raise ValueError(f"Unknown adapter name: {name}. Supported: ['LoRA', 'MoE'].")
+
+
 def get_model_path_from_args():
     try:
         dummy_parser = ArgumentParser()
@@ -77,11 +120,6 @@ def get_model_path_from_args():
         return dummy_args.model_path
     except:
         raise ValueError('model_path argument must be specified.')
-
-def group_args_by_prefix(args: Namespace, prefix: str) -> Namespace:
-    """Groups arguments by a given prefix."""
-    group_dict = {k[len(prefix)+1:]: v for k, v in vars(args).items() if k.startswith(f"{prefix}_")}
-    return Namespace(**group_dict)
 
 def add_base_options(parser):
     group = parser.add_argument_group('base')
@@ -130,11 +168,9 @@ def add_model_options(parser):
     group.add_argument("--use_ema", action='store_true',
                     help="If True, will use EMA model averaging.")
     
-
     group.add_argument("--multi_target_cond", action='store_true', help="If true, enable multi-target conditioning (aka Sigal's model).")
     group.add_argument("--multi_encoder_type", default='single', choices=['single', 'multi', 'split'], type=str, help="Specifies the encoder type to be used for the multi joint condition.")
     group.add_argument("--target_enc_layers", default=1, type=int, help="Num target encoder layers")
-
 
     # Prefix completion model
     group.add_argument("--context_len", default=0, type=int, help="If larger than 0, will do prefix completion.")
@@ -153,35 +189,35 @@ def add_training_options(parser):
     group = parser.add_argument_group('training')
     group.add_argument("--save_dir", required=True, type=str,
                        help="Path to save checkpoints and results.")
-    group.add_argument("--split", default='train', type=str,
-                          help="Which split to train on.")
+    #group.add_argument("--split", default='train', type=str,
+    #                      help="Which split to train on.")
     group.add_argument("--overwrite", action='store_true',
                        help="If True, will enable to use an already existing save_dir.")
-    group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
+    group.add_argument("--lr", default=1e-5, type=float, help="Learning rate.")
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
     group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
     group.add_argument("--eval_batch_size", default=32, type=int,
                        help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
                             "T2m precision calculation is based on fixed batch size 32.")
-    group.add_argument("--eval_split", default='test', choices=['val', 'test'], type=str,
+    group.add_argument("--eval_split", default='val', choices=['val', 'test'], type=str,
                        help="Which split to evaluate on during training.")
     group.add_argument("--eval_during_training", action='store_true',
                        help="If True, will run evaluation during training.")
-    group.add_argument("--eval_rep_times", default=3, type=int,
+    group.add_argument("--eval_rep_times", default=1, type=int,
                        help="Number of repetitions for evaluation loop during training.")
-    group.add_argument("--eval_num_samples", default=-1, type=int,
-                       help="If -1, will use all samples in the specified split.")
-    group.add_argument("--log_interval", default=50, type=int,
+    group.add_argument("--eval_num_samples", default=None, type=int,
+                       help="If None, will use all samples in the specified split.")
+    group.add_argument("--log_interval", default=25, type=int,
                        help="Log losses each N steps")
-    group.add_argument("--save_interval", default=50, type=int,
+    group.add_argument("--save_interval", default=250, type=int,
                        help="Save checkpoints and run evaluation each N steps")
-    group.add_argument("--num_steps", default=1_000, type=int,
+    group.add_argument("--num_steps", default=10_000, type=int,
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
-    
+    group.add_argument("--starting_checkpoint", default="", type=str)
     group.add_argument("--gen_during_training", action='store_true',
                        help="If True, will generate motions during training, on each save interval.")
     group.add_argument("--gen_num_samples", default=3, type=int,
@@ -203,24 +239,27 @@ def add_training_options(parser):
 
 def add_peft_options(parser): # Parameter Efficient Fine-Tuning options [LoRA, MoE, etc.]
     group = parser.add_argument_group('peft')
-    group.add_argument("--peft", nargs='*', type=str, default=[], choices=['LoRA', 'MoE'], help="Type of PEFT to use. (LoRA, MoE, both, ...). ")
+    group.add_argument("--peft", nargs='*', type=str, default=[], choices=ADAPTERS, help="Type of PEFT to use. (LoRA, MoE, both, ...). ")
     # LoRA options
-    group.add_argument("--lora_rank", default=5, type=int, help="Rank of the LoRA layers.")
-    group.add_argument("--lora_layer", default=-100, type=int, help="Transformers layer to use for lora, negative for all layers.")
-    group.add_argument("--lora_no_q", action='store_true', help="remove LoRA adapter from query.")
-    group.add_argument("--lora_ff", action='store_true', help="add LoRA to the feed-forward layers.")
+    group.add_argument(f"--{LORA_PREFIX}_where", nargs='*', type=str, default=["transformer"], choices=['transformer', 'conditioning', 'denoising_head'], help="Where to apply LoRA within MDM.")
+    group.add_argument(f"--{LORA_PREFIX}_tLayer", nargs='*', type=int, default=[-1], help="Transformers layer to use for lora, -1 for all layers.")
+    group.add_argument(f"--{LORA_PREFIX}_rank", default=5, type=int, help="Rank of the LoRA layers.")
+    group.add_argument(f"--{LORA_PREFIX}_ff", action='store_true', help="add LoRA to the feed-forward layers.")
+    group.add_argument(f"--{LORA_PREFIX}_no_q", action='store_true', help="remove LoRA adapter from query.")
     # MoE options
-    group.add_argument("--moe_num_experts", default=5, type=int, help="Number of experts in the MoE layer.")
-    group.add_argument("--moe_num_experts_per_tok", default=3, type=int, help="Number of experts per token in the MoE layer.")
-    group.add_argument("--moe_gate_type", default='linear', type=str, choices=['linear'], help="Type of the gate module in the MoE layer.")
-    group.add_argument("--moe_gate_bias", action='store_true', help="If true, will use bias in the gate module of the MoE layer.")
-    group.add_argument("--moe_routing_strategy", default='topk', type=str, choices=['topk'], help="Routing strategy for the MoE layer.")
-    group.add_argument("--moe_lora_experts", action='store_true', help="If true, will use LoRA instead of FF.")
-    group.add_argument("--moe_lora_experts_rank", default=5, type=int, help="Rank of the LoRA experts.")
+    group.add_argument(f"--{MOE_PREFIX}_where", nargs='*', type=str, default=["transformer"], choices=['transformer', 'conditioning', 'denoising_head'], help="Where to apply MoE within MDM.")
+    group.add_argument(f"--{MOE_PREFIX}_tLayer", nargs='*', type=int, default=[-1], help="Transformers layer to use for MoE, -1 for all layers.")
+    group.add_argument(f"--{MOE_PREFIX}_num_experts", default=5, type=int, help="Number of experts in the MoE layer.")
+    group.add_argument(f"--{MOE_PREFIX}_num_experts_per_tok", default=2, type=int, help="Number of experts per token in the MoE layer.")
+    group.add_argument(f"--{MOE_PREFIX}_gate_type", default='linear', type=str, choices=['linear'], help="Type of the gate module in the MoE layer.")
+    group.add_argument(f"--{MOE_PREFIX}_gate_bias", action='store_true', help="If true, will use bias in the gate module of the MoE layer.")
+    group.add_argument(f"--{MOE_PREFIX}_routing_strategy", default='topk', type=str, choices=['topk'], help="Routing strategy for the MoE layer.")
+    group.add_argument(f"--{MOE_PREFIX}_lora_experts", action='store_true', help="If true, will use LoRA instead of FF.")
+    group.add_argument(f"--{MOE_PREFIX}_lora_experts_rank", default=5, type=int, help="Rank of the LoRA experts.")
 
-def add_few_shot_training_options(parser):
+def add_training_fewshot_options(parser):
     group = parser.add_argument_group('few_shot_training')
-    group.add_argument("--few_shot", action='store_true', help="If true, few-shot generation is assumed.")
+    #group.add_argument("--few_shot", action='store_true', help="If true, few-shot generation is assumed.")
 
 
 def add_sampling_options(parser):
@@ -276,15 +315,15 @@ def add_rendering_options(parser):
     group.add_argument("--freeze_uneven_anim", action='store_true',
                         help="If set, will freeze the uneven animation. Otherwise it will be trimmed")
 
-def add_few_shot_action_generation(parser):
-    group = parser.add_argument_group('few_shot_generation')
-    group.add_argument("--few_shot", action='store_true',
+def add_generate_t2m_action_options(parser):
+    # Hybrid generation mode for the few-shot synthesis of actions
+    # from text description instead of class labels
+    group = parser.add_argument_group('t2m_action_gen')
+    group.add_argument("--t2m_action_gen", action='store_true',
                         help="If true, few-shot generation is assumed.")
-    group.add_argument("--shots", default=10, type=int,
-                        help="Number of few shot samples to be generated.")
     group.add_argument("--action_labels", nargs='+', type=int, default=[],
                         help="List of action labels (indexes) for few-shot generation.")
-    group.add_argument("--class_captions", default='', type=str,
+    group.add_argument("--action_captions", default='', type=str,
                         help="Path to a .json file listing viable natural language descriptions per action class")
 
 def add_edit_options(parser):
@@ -338,10 +377,10 @@ def train_args():
     add_model_options(parser)
     add_diffusion_options(parser)
     add_training_options(parser)
+    add_training_fewshot_options(parser)
     add_peft_options(parser)
-    add_few_shot_training_options(parser)
 
-    return wrap_args(apply_rules(parser.parse_args()))
+    return wrap_adapter_args(apply_rules(parser.parse_args()))
 
 
 def generate_args():
@@ -352,7 +391,7 @@ def generate_args():
     add_generate_options(parser)
     add_rendering_options(parser)
     add_generate_aug_options(parser)
-    add_few_shot_action_generation(parser)
+    add_generate_t2m_action_options(parser)
     args = parse_and_load_from_model(parser)
     cond_mode = get_cond_mode(args)
 

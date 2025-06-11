@@ -1,7 +1,11 @@
 ------------ Options -------------
-batch_size: 32
+batch_size: 8
 checkpoints_dir: ./checkpoints
 dataset_name: ntu60
+fewshot: True
+pretrain_dataset: HumanML3D
+task_split: xset
+fewshot_id: S0000
 decomp_name: Decomp_SP001_SM001_H512
 dim_att_vec: 512
 dim_dec_hidden: 1024

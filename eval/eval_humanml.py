@@ -31,6 +31,7 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
         # print(motion_loader_name)
         with torch.no_grad():
             for idx, batch in enumerate(motion_loader):
+                print(f"---> [{motion_loader_name}] Processing batch {idx+1}/{len(motion_loader)}", end='\r')
                 word_embeddings, pos_one_hots, _, sent_lens, motions, m_lens, _ = batch
                 text_embeddings, motion_embeddings = eval_wrapper.get_co_embeddings(
                     word_embs=word_embeddings,

@@ -239,10 +239,6 @@ class Text2MotionDatasetV2(data.Dataset):
             for name in tqdm(id_list):
                 try:
                     motion = np.load(pjoin(opt.motion_dir, name + '.npy'))
-                    # In the case of 3D motion flatten to [T, J*dim]
-                    # which is the expected format in the repo.
-                    if motion.ndim == 3:
-                        motion = motion.reshape(motion.shape[0], -1)
                     
                     if (len(motion)) < min_motion_len or (len(motion) >= 200):
                         continue
@@ -775,11 +771,10 @@ class HumanML3D(data.Dataset):
         opt.model_dir = pjoin(abs_base_path, opt.model_dir)
         opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir)
         
-        #opt.data_root = pjoin(abs_base_path, opt.data_root)
-        opt.data_root = pjoin(abs_base_path, opt.data_root, os.path.dirname(split)) # not assuming split is in the data_root
+        opt.meta_dir = pjoin(abs_base_path, './dataset')
+        opt.data_root = pjoin(abs_base_path, opt.data_root)
         
         opt.save_root = pjoin(abs_base_path, opt.save_root)
-        opt.meta_dir = pjoin(abs_base_path, './dataset')
         opt.use_cache = kwargs.get('use_cache', False) # Turned of caching
         
         opt.fixed_len = kwargs.get('fixed_len', 0)
@@ -788,25 +783,28 @@ class HumanML3D(data.Dataset):
         is_autoregressive = kwargs.get('autoregressive', False)
         opt.disable_offset_aug = is_autoregressive and (opt.fixed_len > 0) and (mode == 'eval')  # for autoregressive evaluation, use the start of the motion and not something from the middle
         self.opt = opt
+        
         print('Loading dataset %s ...' % opt.dataset_name)
-
         if mode == 'gt':
-            # used by T2M models (including evaluators)
-            print(f'Loading GT stats from {opt.meta_dir} ...')
+            # used by T2M models (including evaluators) (cached GT)
+            print(f'[{mode}] Stats from {opt.meta_dir} ({opt.dataset_name}) ...')
             self.mean = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
             self.std = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
-        elif mode in ['train', 'eval', 'text_only', 'few_shot_train']:
-            # used by our models
-            print(f'Loading stats from {opt.data_root} ...')
-            self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
-            self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
-            
-            # Flatten stats if 2D was given
-            assert self.mean.shape == self.std.shape, "Mismatch in Mean - Std shapes"
-            if self.mean.ndim == 2:
-                self.mean = self.mean.reshape(-1)
-                self.std = self.std.reshape(-1)
-
+        elif mode in ['train', 'eval', 'text_only']:
+            if not self.opt.fewshot:
+                # used by our models
+                # > Mean.npy and Std.npy are computed w.r.t. the full dataset (all splits)
+                # > check HumanML3D repo. processing script for details
+                print(f'[{mode}] Stats from {opt.data_root} ...')
+                self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
+                self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
+            else:
+                # used by few-shot models
+                # we use stats from the specified Dataset, ex. HumanML3D
+                print(f'[{mode}] Stats from {opt.pretrain_data_root} ...')
+                self.mean = np.load(pjoin(opt.pretrain_data_root, 'Mean.npy'))
+                self.std = np.load(pjoin(opt.pretrain_data_root, 'Std.npy'))
+        
         if mode == 'eval':
             # used by T2M models (including evaluators)
             # this is to translate their norms to ours

@@ -26,18 +26,33 @@ from data_loaders.get_data import get_dataset_loader
 from utils.model_util import load_model_wo_clip
 from data_loaders.humanml.scripts.motion_process import get_target_location, sample_goal, get_allowed_joint_options
 from utils.sampler_util import ClassifierFreeSampleModel
+from utils.parser_util import get_opts_from_adapter_name, serialize_args, de_serialize_args
 
+from modules import LoRA, MoE
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
 INITIAL_LOG_LOSS_SCALE = 20.0
 
+def print_model_structure(module, indent=0, name='(root)', filter=""):
+    prefix = '  ' * indent
+    classname = module.__class__.__name__
+    print(f"{prefix}{name}: {classname}")
+
+    # List parameters of this module (but not children)
+    for pname, param in module.named_parameters(recurse=False):
+        if filter in pname :
+            print(f"{prefix}  ↳ param: {pname:30s} | shape={tuple(param.shape)} | requires_grad={param.requires_grad}")
+
+    # Recurse through children
+    for child_name, child in module.named_children():
+        print_model_structure(child, indent + 1, name=child_name)
 
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
-        self.dataset = args.dataset
+        self.dataset = args.dataset 
         self.train_platform = train_platform
         self.model = model
         self.model_avg = None
@@ -55,6 +70,7 @@ class TrainLoop:
         self.log_interval = args.log_interval
         self.save_interval = args.save_interval
         self.resume_checkpoint = args.resume_checkpoint
+        self.starting_checkpoint = args.starting_checkpoint
         self.use_fp16 = False  # deprecating this option
         self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
@@ -66,22 +82,15 @@ class TrainLoop:
         self.num_steps = args.num_steps
 
         self.sync_cuda = torch.cuda.is_available()
-        self.lora = args.lora
-        self.moe = args.moe
-
+        
         self._load_and_sync_parameters()
-
-        # Plug adapters
-        if self.lora.finetune:
-            self.model.add_LoRA_adapters()
-        if self.moe.finetune:
-            self.model.add_MoE_adapters(args)
         # Turn on adapters only for training
-        if self.lora.finetune or self.moe.finetune:
+        if len(self.args.peft) > 0:
             self.model.train_adapters_only()
         # re-load the model to the device
-        self.model.to(args.device)
-
+        self.model.to(self.args.device)
+        #print_model_structure(self.model)
+        #exit(0)
 
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
@@ -121,6 +130,7 @@ class TrainLoop:
         if args.dataset in ['kit', 'humanml', 'ntu60'] and args.eval_during_training:
             mm_num_samples = 0  # mm is super slow hence we won't run it during training
             mm_num_repeats = 0  # mm is super slow hence we won't run it during training
+            
             gen_loader = get_dataset_loader(name=args.dataset, batch_size=args.eval_batch_size, num_frames=None,
                                             split=args.eval_split,
                                             hml_mode='eval',
@@ -130,6 +140,7 @@ class TrainLoop:
             self.eval_gt_data = get_dataset_loader(name=args.dataset, batch_size=args.eval_batch_size, num_frames=None,
                                                    split=args.eval_split,
                                                    hml_mode='gt', device=dist_util.dev())
+            
             self.eval_wrapper = EvaluatorMDMWrapper(args.dataset, dist_util.dev())
             self.eval_data = {
                 'test': lambda: eval_humanml.get_mdm_loader(self.args,
@@ -142,18 +153,36 @@ class TrainLoop:
         self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
-        resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
 
+        resume_checkpoint = self.starting_checkpoint or self.find_resume_checkpoint() or self.resume_checkpoint
+        adapter_cfg_checkpoint = [None for _ in range(len(self.args.peft))]
+        
         if resume_checkpoint:
             # we add 1 because self.resume_step has already been done and we don't want to run it again
             # in particular we don't want to run the evaluation and generation again
             self.step += 1  
-            
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint) 
             logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
             state_dict = dist_util.load_state_dict(
-                resume_checkpoint, map_location=dist_util.dev())
+                resume_checkpoint, map_location=dist_util.dev()
+            )
 
+            # Insert adapters (if their configuration is mentioned in the checkpoint)
+            adapters_cfg = state_dict.get('adapters_cfg', None)
+            for i, name in enumerate(self.args.peft):
+                if adapters_cfg is not None:
+                    # Retrieve cfg. of specific adapter
+                    adapter_cfg_checkpoint[i] = de_serialize_args(adapters_cfg.get(name, None))
+                    # if the adapter is in the checkpoint and it was trained (finetune flag signals that)
+                    # we should insert it back before loading model weights
+                    if adapter_cfg_checkpoint[i] is not None and adapter_cfg_checkpoint[i].finetune:
+                        setattr(self.args, name, adapter_cfg_checkpoint[i]) # update local reference (for consistency)
+                        # Plug the adapter
+                        adapter_opt, guidance_opt = get_opts_from_adapter_name(name, self.args)
+                        self.model.add_adapter(eval(name), adapter_opt, guidance_opt)
+                        print(f"{name} configuration from checkpoint...")
+
+            # Load model
             if 'model_avg' in state_dict:
                 print('loading both model and model_avg')
                 state_dict, state_dict_avg = state_dict['model'], state_dict[
@@ -167,14 +196,29 @@ class TrainLoop:
                     print('loading model_avg from model')
                     self.model_avg.load_state_dict(self.model.state_dict(), strict=False)
 
+            # # Load the model to the device
             # self.model.load_state_dict(
             #     dist_util.load_state_dict(
             #         resume_checkpoint, map_location=dist_util.dev()
             #     ), strict=False
             # )
 
+        if len(self.args.peft) > 0 : # some adapters are requested by args
+            for i, name in enumerate(self.args.peft):
+                if adapter_cfg_checkpoint[i] is None : # it has not been added yet
+                    # Plug the adapter (according to the args)
+                    adapter_opt, guidance_opt = get_opts_from_adapter_name(name, self.args)
+                    self.model.add_adapter(eval(name), adapter_opt, guidance_opt)
+                    print(f"Plugging {name}...")
+        
+        if self.starting_checkpoint:
+            self.resume_step = 0
+            self.step -= 1
+
+
     def _load_optimizer_state(self):
         main_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
+        
         opt_checkpoint = bf.join(
             bf.dirname(main_checkpoint), f"opt{self.resume_step:09}.pt"
         )
@@ -201,7 +245,7 @@ class TrainLoop:
             # preserve the weight decay parameter
             for group in self.opt.param_groups:
                 group['weight_decay'] = tgt_wd
-            self.opt.param_groups[0]['capturable'] = True
+            self.opt.param_groups[0]['capturable'] = True            
 
     def cond_modifiers(self, cond, motion):
         # All modifiers must be in-place
@@ -239,7 +283,7 @@ class TrainLoop:
                             continue
                         else:
                             self.train_platform.report_scalar(name=k, value=v, iteration=self.total_step(), group_name='Loss')
-
+                
                 if self.total_step() % self.save_interval == 0:
                     self.save()
                     self.model.eval()
@@ -270,8 +314,9 @@ class TrainLoop:
         if self.eval_wrapper is not None:
             print('Running evaluation loop...')
             log_file = os.path.join(self.save_dir, f'eval_humanml_{(self.total_step()):09d}.log')
-            diversity_times = 300
+            diversity_times = 50#300
             mm_num_times = 0  # mm is super slow hence we won't run it during training
+            
             eval_dict = eval_humanml.evaluation(
                 self.eval_wrapper, self.eval_gt_data, self.eval_data, log_file,
                 replication_times=self.args.eval_rep_times, diversity_times=diversity_times, mm_num_times=mm_num_times, run_mm=False)
@@ -372,11 +417,9 @@ class TrainLoop:
         logger.logkv("step", self.total_step())
         logger.logkv("samples", (self.total_step() + 1) * self.global_batch)
 
-
     def ckpt_file_name(self):
         return f"model{(self.total_step()):09d}.pt"
 
-  
     def generate_during_training(self):
         if not self.args.gen_during_training:
             return
@@ -388,6 +431,16 @@ class TrainLoop:
         gen_args.guidance_param = self.args.gen_guidance_param
         gen_args.motion_length = 6  # fixed length
         gen_args.input_text = gen_args.text_prompt = gen_args.action_file = gen_args.action_name = gen_args.dynamic_text_path = ''
+
+        if self.data.dataset.opt.fewshot :
+            # Trigger custom t2m action synth. mode
+            gen_args.t2m_action_gen = True
+            gen_args.no_render = False
+            gen_args.motion_length_noise = 0 # No noise for the motion length
+            gen_args.freeze_uneven_anim = False
+            gen_args.action_captions = self.data.dataset.opt.action_captions
+            gen_args.action_labels = self.data.dataset.opt.fewshot_metadata.action_labels
+        
         if gen_args.multi_target_cond:
             gen_args.sampling_mode = 'goal'
             gen_args.target_joint_source = 'data'
@@ -434,7 +487,11 @@ class TrainLoop:
                 # save both the model and the average model
                 state_dict_avg = self.model_avg.state_dict()
                 del_clip(state_dict_avg)
-                state_dict = {'model': state_dict, 'model_avg': state_dict_avg}
+                state_dict = {
+                    'model': state_dict,
+                    'model_avg': state_dict_avg,
+                    'adapters_cfg' : {name: serialize_args(getattr(self.args, name)) for name in self.args.peft if getattr(self.args, name)}, # adapters configuration
+                }
 
             logger.log(f"saving model...")
             filename = self.ckpt_file_name()
